@@ -22,12 +22,14 @@
   .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 16px;margin-bottom:14px;}
   .card h2{font-size:1.15rem;margin:0 0 12px;font-weight:800;color:#FFFFFF;}
   .card h3{font-size:0.95rem;margin:0 0 10px;color:var(--text-dim);font-weight:700;}
+  .section-label{font-size:0.8rem;text-transform:uppercase;letter-spacing:0.03em;color:var(--khaki-light);font-weight:800;margin:0 0 8px;}
   .row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);gap:10px;}
   .row:last-child{border-bottom:none;}
   .name{font-size:1.02rem;font-weight:700;color:#FFFFFF;}
   .meta{font-size:0.84rem;color:var(--text-dim);font-weight:600;}
   input,select{background:var(--surface-raised);border:1px solid var(--line);color:#FFFFFF;border-radius:7px;padding:9px 11px;font-family:inherit;font-size:0.95rem;font-weight:700;width:100%;}
   input:focus,select:focus{outline:none;border-color:var(--khaki-light);}
+  input:disabled{opacity:0.5;}
   label.f{display:block;font-size:0.8rem;color:var(--text-dim);margin:0 0 4px;font-weight:700;}
   .field{margin-bottom:10px;}
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
@@ -42,6 +44,7 @@
   .stat{background:var(--surface-raised);border-radius:8px;padding:10px 12px;}
   .stat .n{font-size:1.15rem;font-weight:800;color:#FFFFFF;}
   .stat .n.bad{color:#FFD9BE;}
+  .stat .n.good{color:var(--khaki-light);}
   .stat .l{font-size:0.74rem;color:var(--text-dim);font-weight:700;}
   .empty{color:var(--text-dim);font-size:0.92rem;text-align:center;padding:18px 0;font-weight:700;}
   .share-item{background:var(--surface-raised);border-radius:8px;padding:11px 13px;margin-bottom:9px;border:1px solid var(--line);}
@@ -49,6 +52,7 @@
   .badge{font-size:0.72rem;padding:3px 9px;border-radius:20px;background:var(--line);color:#FFFFFF;font-weight:800;}
   .badge.won{background:var(--khaki-light);color:#2E2013;}
   .badge.sold{background:var(--brown);color:#FFFFFF;}
+  .badge.overdue{background:var(--bad);color:#FFFFFF;}
   .pay-list{margin-top:6px;}
   .pay-line{font-size:0.8rem;color:var(--text-dim);padding:5px 0;border-top:1px solid var(--line);font-weight:600;}
   .divider{border:none;border-top:1px solid var(--line);margin:12px 0;}
@@ -60,6 +64,8 @@
   .file-row{display:flex;gap:8px;}
   .file-row button{flex:1;}
   .toggle{cursor:pointer;color:var(--khaki-light);font-size:0.86rem;font-weight:800;}
+  .note{font-size:0.78rem;color:var(--text-dim);font-weight:600;line-height:1.5;margin-top:6px;}
+  .info-box{background:var(--surface);border:1px dashed var(--khaki);border-radius:8px;padding:11px 13px;margin:10px 0;}
 </style>
 </head>
 <body>
@@ -71,12 +77,14 @@
   <nav>
     <button class="tab-btn active" data-tab="dashboard">ዳሽቦርድ</button>
     <button class="tab-btn" data-tab="members">አባላት</button>
+    <button class="tab-btn" data-tab="payments">ክፍያ</button>
     <button class="tab-btn" data-tab="draw">እጣ እና አሸናፊዎች</button>
     <button class="tab-btn" data-tab="loans">ብድር እና ወጪዎች</button>
     <button class="tab-btn" data-tab="settings">ቅንብሮች</button>
   </nav>
   <div id="tab-dashboard"></div>
   <div id="tab-members" style="display:none"></div>
+  <div id="tab-payments" style="display:none"></div>
   <div id="tab-draw" style="display:none"></div>
   <div id="tab-loans" style="display:none"></div>
   <div id="tab-settings" style="display:none"></div>
@@ -94,7 +102,7 @@ window.addEventListener("error", function(e){
 
 let state = null;
 const STORAGE_KEY = "ekub_system_v1";
-let ui = { openMembers:{}, openPay:{}, openWin:{} };
+let ui = { openMembers:{}, openWin:{}, payment:{ memberId:null, shareId:null } };
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -121,7 +129,8 @@ async function loadState(){
 
 async function saveState(){
   try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify(state));
+    const res = await window.storage.set(STORAGE_KEY, JSON.stringify(state));
+    if(!res){ showToast("ማስቀመጥ አልተቻለም - እንደገና ይሞክሩ"); }
   }catch(e){
     showToast("ማስቀመጥ አልተቻለም - ግንኙነትዎን ያረጋግጡ");
   }
@@ -188,10 +197,17 @@ function sharePaidAll(s){
   return state.payments.filter(p=>p.shareId===s.id).reduce((a,p)=>a+p.amount,0);
 }
 function shareRemaining(s){ return Math.max(0, shareTotalDue(s) - sharePaidWeekly(s)); }
-function shareNextWeek(s){
+// weeks fully covered so far, based on money paid toward weekly dues
+function shareWeeksPaidCount(s){
   const w = shareWeekly(s);
-  if(w<=0) return 1;
-  return Math.min(state.settings.totalWeeks, Math.floor(sharePaidWeekly(s)/w) + 1);
+  if(w<=0) return 0;
+  return Math.min(state.settings.totalWeeks, Math.floor(sharePaidWeekly(s)/w));
+}
+function shareNextWeek(s){
+  return Math.min(state.settings.totalWeeks, shareWeeksPaidCount(s) + 1);
+}
+function shareUnpaidWeeks(s){
+  return Math.max(0, state.settings.totalWeeks - shareWeeksPaidCount(s));
 }
 function memberShares(memberId){ return state.shares.filter(s=>s.memberId===memberId); }
 function memberTotals(memberId){
@@ -222,41 +238,88 @@ function renderDashboard(){
   const el = document.getElementById("tab-dashboard");
   const today = todayISO();
   const weekAgo = new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
+  const monthPrefix = today.slice(0,7);
 
   const todayCollected = state.payments.filter(p=>p.dateGregorian===today).reduce((a,p)=>a+p.amount,0);
   const weekCollected = state.payments.filter(p=>p.dateGregorian>=weekAgo).reduce((a,p)=>a+p.amount,0);
+  const monthCollected = state.payments.filter(p=>p.dateGregorian.slice(0,7)===monthPrefix).reduce((a,p)=>a+p.amount,0);
   const totalReceived = state.payments.reduce((a,p)=>a+p.amount,0);
+
+  const activeShares = state.shares.filter(s=>s.status==="active");
+  const totalOutstanding = activeShares.reduce((a,s)=>a+shareRemaining(s),0);
+  const weeklyTarget = activeShares.reduce((a,s)=>a+shareWeekly(s),0);
+
   const paidOutShares = state.shares.filter(s=>s.payout && s.payout.disbursed);
   const totalPaidOut = paidOutShares.reduce((a,s)=>a+s.payout.net,0);
   const totalLoansGiven = state.loans.reduce((a,l)=>a+l.amount,0);
   const totalLoanRepaid = state.loans.reduce((a,l)=>a+(l.repayments||[]).reduce((x,r)=>x+r.amount,0),0);
+  const totalLoanOutstanding = totalLoansGiven - totalLoanRepaid;
   const totalExpenses = state.expenses.reduce((a,e)=>a+e.amount,0);
   const totalBalance = totalReceived + totalLoanRepaid - totalPaidOut - totalLoansGiven - totalExpenses;
 
   let html = `<div class="card">
-    <h2>የሰብሳቢ አጠቃላይ እይታ</h2>
+    <p class="section-label">የገንዘብ ስብስብ</p>
     <div class="stat-grid">
       <div class="stat"><div class="n">${formatMoney(todayCollected)}</div><div class="l">ዛሬ የተሰበሰበ</div></div>
-      <div class="stat"><div class="n">${formatMoney(weekCollected)}</div><div class="l">ባለፉት 7 ቀናት የተሰበሰበ</div></div>
-      <div class="stat"><div class="n">${formatMoney(totalReceived)}</div><div class="l">ጠቅላላ የተሰበሰበ (ከጅምሩ)</div></div>
+      <div class="stat"><div class="n">${formatMoney(weekCollected)}</div><div class="l">ባለፉት 7 ቀናት</div></div>
+      <div class="stat"><div class="n">${formatMoney(monthCollected)}</div><div class="l">በዚህ ወር</div></div>
+      <div class="stat"><div class="n">${formatMoney(totalReceived)}</div><div class="l">ጠቅላላ (ከጅምሩ)</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="section-label">ንቁ ድርሻዎች ሁኔታ</p>
+    <div class="stat-grid">
+      <div class="stat"><div class="n">${activeShares.length}</div><div class="l">ንቁ ድርሻዎች</div></div>
+      <div class="stat"><div class="n">${formatMoney(weeklyTarget)}</div><div class="l">የሳምንት ዒላማ ጠቅላላ</div></div>
+      <div class="stat"><div class="n bad">${formatMoney(totalOutstanding)}</div><div class="l">ጠቅላላ ያልተከፈለ (እዳ)</div></div>
+      <div class="stat"><div class="n">${state.shares.length - activeShares.length}</div><div class="l">የወጡ ድርሻዎች (አሸናፊ/ተሽጧል)</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="section-label">ወጪ እና ብድር</p>
+    <div class="stat-grid">
       <div class="stat"><div class="n">${formatMoney(totalPaidOut)}</div><div class="l">ለአሸናፊዎች የተከፈለ ጠቅላላ</div></div>
-      <div class="stat"><div class="n">${formatMoney(totalLoansGiven)}</div><div class="l">የተሰጠ ጠቅላላ ብድር</div></div>
       <div class="stat"><div class="n">${formatMoney(totalExpenses)}</div><div class="l">ጠቅላላ ወጪ</div></div>
+      <div class="stat"><div class="n">${formatMoney(totalLoansGiven)}</div><div class="l">የተሰጠ ጠቅላላ ብድር</div></div>
+      <div class="stat"><div class="n ${totalLoanOutstanding>0?'bad':''}">${formatMoney(totalLoanOutstanding)}</div><div class="l">ያልተመለሰ ብድር ቀሪ</div></div>
     </div>
     <hr class="divider">
     <div class="stat" style="background:var(--surface);border:2px solid var(--khaki-light);">
       <div class="n" style="font-size:1.4rem;">${formatMoney(totalBalance)}</div>
-      <div class="l">በእጅ ያለ ጠቅላላ ሂሳብ</div>
+      <div class="l">በእጅ ያለ ጠቅላላ ሂሳብ (ገንዘብ ያዥ ጋር)</div>
     </div>
   </div>`;
 
+  // overdue members list
+  const overdue = state.members.map(m=>({ m, t: memberTotals(m.id) }))
+    .filter(x=>x.t.remaining>0)
+    .sort((a,b)=>b.t.remaining-a.t.remaining)
+    .slice(0,10);
+
   html += `<div class="card">
-    <h2>መረጃ</h2>
+    <p class="section-label">በእዳ ላይ ያሉ አባላት (ከፍተኛ 10)</p>`;
+  if(overdue.length===0){
+    html += `<p class="empty">ምንም ያልተከፈለ ውዝፍ ክፍያ የለም</p>`;
+  } else {
+    overdue.forEach(x=>{
+      html += `<div class="row">
+        <div class="name">${escapeHtml(x.m.name)}</div>
+        <div class="name bad" style="color:#FFD9BE;">${formatMoney(x.t.remaining)}</div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+
+  html += `<div class="card">
+    <p class="section-label">መረጃ (Backup)</p>
     <div class="file-row">
       <button class="btn secondary" onclick="exportData()">JSON አውርድ</button>
       <button class="btn secondary" onclick="document.getElementById('importFile').click()">JSON አስገባ</button>
     </div>
     <input type="file" id="importFile" accept="application/json" style="display:none" onchange="importData(event)">
+    <p class="note">ይህ ማስቀመጫ ከዚህ Claude መለያዎ ጋር የተያያዘ ነው፤ በስልክዎም ሆነ በኮምፒዩተርዎ ይህንኑ ተመሳሳይ ገጽ (link) ሲከፍቱ በራስ-ሰር ይመሳሰላል። ፋይሉን ወደ ኮምፒዩተርዎ አውርደው ለብቻው ቢከፍቱት ግን ከዚህ ጋር አይመሳሰልም — ለዚያ ነው JSON ማውጫ/ማስገቢያ ያለው።</p>
   </div>`;
 
   el.innerHTML = html;
@@ -266,7 +329,7 @@ function renderDashboard(){
 function renderMembers(){
   const el = document.getElementById("tab-members");
   let html = `<div class="card">
-    <h2>አባል ጨምር</h2>
+    <p class="section-label">አዲስ አባል ጨምር</p>
     <div class="field"><label class="f">ስም</label><input type="text" id="mName"></div>
     <div class="form-grid">
       <div class="field"><label class="f">ስልክ</label><input type="text" id="mPhone"></div>
@@ -308,7 +371,7 @@ function renderMembers(){
         html += `<p class="empty">እስካሁን ድርሻ የለም</p>`;
       } else {
         shares.forEach(s=>{
-          html += renderShareItem(s);
+          html += renderShareItem(s, m);
         });
       }
 
@@ -344,61 +407,38 @@ function renderMembers(){
   });
 }
 
-function renderShareItem(s){
-  const member = state.members.find(m=>m.id===s.memberId);
+// Read-only share summary + history; payment recording now lives in the Payments tab
+function renderShareItem(s, member){
   const weekly = shareWeekly(s);
   const due = shareTotalDue(s);
   const paid = sharePaidWeekly(s);
   const remaining = shareRemaining(s);
-  const nextWeek = shareNextWeek(s);
-  const payOpen = ui.openPay[s.id];
+  const weeksPaid = shareWeeksPaidCount(s);
+  const unpaidWeeks = shareUnpaidWeeks(s);
   const payments = state.payments.filter(p=>p.shareId===s.id).slice().reverse();
 
   let badge = "";
   if(s.status==="won") badge = `<span class="badge won">አሸናፊ</span>`;
   if(s.status==="sold") badge = `<span class="badge sold">ተሽጧል</span>`;
+  if(s.status==="active" && remaining>0) badge += ` <span class="badge overdue">${unpaidWeeks} ሳምንት ውዝፍ</span>`;
 
   let html = `<div class="share-item">
     <div class="share-head">
       <div><span class="name">#${escapeHtml(s.lotteryNumber||"-")}</span> <span class="meta">(${s.units} ድርሻ)</span></div>
-      ${badge}
+      <div>${badge}</div>
     </div>
-    <div class="meta">ሳምንታዊ ክፍያ፡ ${formatMoney(weekly)} &middot; ሙሉ ክፍያ፡ ${formatMoney(shareFullPayout(s))}</div>
-    <div class="meta">${formatMoney(paid)} ከ ${formatMoney(due)} ተከፍሏል &middot; ቀሪ፡ ${formatMoney(remaining)} &middot; ቀጣይ ሳምንት፡ ${nextWeek}/${state.settings.totalWeeks}</div>`;
+    <div class="meta">ሳምንታዊ ክፍያ፡ ${formatMoney(weekly)} &middot; ሙሉ ክፍያ (ካሸነፈ)፡ ${formatMoney(shareFullPayout(s))}</div>
+    <div class="meta">${formatMoney(paid)} ከ ${formatMoney(due)} ተከፍሏል &middot; ${weeksPaid} ከ ${state.settings.totalWeeks} ሳምንት ተሸፍኗል &middot; ቀሪ፡ ${formatMoney(remaining)}</div>`;
 
   if(s.status==="active"){
-    html += `<span class="toggle" onclick="togglePay('${s.id}')">${payOpen?"ዝጋ":"ክፍያ መዝግብ"}</span>`;
-  }
-
-  if(payOpen){
-    const today = todayISO();
-    html += `<div class="field" style="margin-top:8px;">
-      <div class="form-grid">
-        <div><label class="f">የከፋይ ስም</label><input type="text" id="payPayer_${s.id}" value="${escapeHtml(member?member.name:'')}"></div>
-        <div><label class="f">መጠን</label><input type="number" id="payAmount_${s.id}" value="${weekly}"></div>
-      </div>
-      <div class="form-grid" style="margin-top:6px;">
-        <div><label class="f">የሳምንት ቁጥር</label><input type="number" id="payWeek_${s.id}" value="${nextWeek}" min="1" max="${state.settings.totalWeeks}"></div>
-        <div><label class="f">ምድብ</label>
-          <select id="payCategory_${s.id}"><option value="weekly">ሳምንታዊ ክፍያ</option><option value="additional">ተጨማሪ ክፍያ</option></select>
-        </div>
-      </div>
-      <div class="form-grid" style="margin-top:6px;">
-        <div><label class="f">የክፍያ ዘዴ</label>
-          <select id="payMethod_${s.id}"><option>ጥሬ ገንዘብ</option><option>CBE</option><option>BOA</option><option>አዋሽ ባንክ</option></select>
-        </div>
-        <div><label class="f">ቀን</label><input type="date" id="payDate_${s.id}" value="${today}"></div>
-      </div>
-      <div class="field" style="margin-top:6px;"><label class="f">ማጣቀሻ / የከፈለው ሰው</label><input type="text" id="payRef_${s.id}" placeholder="ለምሳሌ በወንድሙ ተከፍሏል"></div>
-      <div class="meta" id="payEthDate_${s.id}" style="margin-bottom:8px;">የኢትዮጵያ ቀን፡ ${formatEth(today)}</div>
-      <button class="btn small" onclick="recordPayment('${s.id}')">ክፍያ አስቀምጥ</button>
-    </div>`;
+    html += `<button class="btn ghost" style="margin-top:8px;" onclick="goToPayment('${member.id}','${s.id}')">ክፍያ ይመዝገቡ</button>`;
   }
 
   if(payments.length>0){
     html += `<div class="pay-list">`;
     payments.slice(0,4).forEach(p=>{
-      html += `<div class="pay-line">ሳምንት ${p.weekNumber} &middot; ${formatMoney(p.amount)} ብር &middot; ${p.method} &middot; ${p.dateGregorian} (${formatEth(p.dateGregorian)}) ${p.payerName?" &middot; በ"+escapeHtml(p.payerName):""}${p.reference?" &middot; "+escapeHtml(p.reference):""}</div>`;
+      const weekLabel = (p.weekEnd && p.weekEnd>p.weekNumber) ? ("ሳምንት "+p.weekNumber+"-"+p.weekEnd) : ("ሳምንት "+p.weekNumber);
+      html += `<div class="pay-line">${p.category==="additional"?"ተጨማሪ ክፍያ":weekLabel} &middot; ${formatMoney(p.amount)} ብር &middot; ${p.method} &middot; ${p.dateGregorian} (${formatEth(p.dateGregorian)}) ${p.payerName?" &middot; በ"+escapeHtml(p.payerName):""}${p.reference?" &middot; "+escapeHtml(p.reference):""}</div>`;
     });
     html += `</div>`;
   }
@@ -408,7 +448,6 @@ function renderShareItem(s){
 }
 
 function toggleMember(id){ ui.openMembers[id] = !ui.openMembers[id]; renderMembers(); }
-function togglePay(shareId){ ui.openPay[shareId] = !ui.openPay[shareId]; renderMembers(); renderDraw(); }
 
 function addMember(){
   const name = document.getElementById("mName").value.trim();
@@ -435,22 +474,172 @@ function addShare(memberId){
   saveState(); render();
 }
 
-function recordPayment(shareId){
-  const amount = parseFloat(document.getElementById("payAmount_"+shareId).value);
+// ============ PAYMENTS (dedicated tab) ============
+function goToPayment(memberId, shareId){
+  ui.payment.memberId = memberId;
+  ui.payment.shareId = shareId;
+  document.querySelectorAll(".tab-btn").forEach(b=>b.classList.remove("active"));
+  document.querySelector('.tab-btn[data-tab="payments"]').classList.add("active");
+  document.querySelectorAll('[id^="tab-"]').forEach(t=>t.style.display="none");
+  document.getElementById("tab-payments").style.display="block";
+  renderPayments();
+}
+
+function renderPayments(){
+  const el = document.getElementById("tab-payments");
+
+  if(state.members.length===0){
+    el.innerHTML = `<div class="card"><p class="empty">መጀመሪያ ከ"አባላት" ገጽ አባል እና ድርሻ ይጨምሩ</p></div>`;
+    return;
+  }
+
+  // resolve current member/share selection
+  if(!ui.payment.memberId || !state.members.find(m=>m.id===ui.payment.memberId)){
+    ui.payment.memberId = state.members[0].id;
+  }
+  let shares = memberShares(ui.payment.memberId).filter(s=>s.status==="active");
+  if(!ui.payment.shareId || !shares.find(s=>s.id===ui.payment.shareId)){
+    ui.payment.shareId = shares.length ? shares[0].id : null;
+  }
+
+  const member = state.members.find(m=>m.id===ui.payment.memberId);
+  const memberOptions = state.members.map(m=>
+    `<option value="${m.id}" ${m.id===ui.payment.memberId?"selected":""}>${escapeHtml(m.name)}</option>`
+  ).join("");
+
+  let html = `<div class="card">
+    <p class="section-label">ክፍያ መዝግብ</p>
+    <div class="field">
+      <label class="f">አባል ይምረጡ</label>
+      <select id="payMemberSelect" onchange="onPaymentMemberChange()">${memberOptions}</select>
+    </div>`;
+
+  if(shares.length===0){
+    html += `<p class="empty">ይህ አባል ንቁ ድርሻ የለውም</p></div>`;
+    el.innerHTML = html;
+    return;
+  }
+
+  const shareOptions = shares.map(s=>
+    `<option value="${s.id}" ${s.id===ui.payment.shareId?"selected":""}>#${escapeHtml(s.lotteryNumber)} (${s.units} ድርሻ)</option>`
+  ).join("");
+
+  html += `<div class="field">
+      <label class="f">የእጣ ድርሻ ይምረጡ</label>
+      <select id="payShareSelect" onchange="onPaymentShareChange()">${shareOptions}</select>
+    </div>
+    <div id="payShareInfo"></div>
+    <hr class="divider">
+    <div class="field">
+      <label class="f">ምድብ</label>
+      <select id="payCategory" onchange="onPaymentCategoryChange()">
+        <option value="weekly">ሳምንታዊ ክፍያ</option>
+        <option value="additional">ተጨማሪ ክፍያ</option>
+      </select>
+    </div>
+    <div id="payWeeksField" class="field">
+      <label class="f">የሚከፈልበት የሳምንታት ብዛት</label>
+      <input type="number" id="payWeeksCount" min="1" value="1" oninput="onWeeksCountChange()">
+      <p class="note" id="payWeeksNote"></p>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label class="f">የከፋይ ስም</label><input type="text" id="payPayer" value="${escapeHtml(member?member.name:'')}"></div>
+      <div class="field"><label class="f">መጠን</label><input type="number" id="payAmount"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label class="f">የክፍያ ዘዴ</label>
+        <select id="payMethod"><option>ጥሬ ገንዘብ</option><option>CBE</option><option>BOA</option><option>አዋሽ ባንክ</option></select>
+      </div>
+      <div class="field"><label class="f">ቀን</label><input type="date" id="payDate" value="${todayISO()}" onchange="updateEthDateNote()"></div>
+    </div>
+    <div class="field"><label class="f">ማጣቀሻ / ማስታወሻ</label><input type="text" id="payRef" placeholder="ለምሳሌ በወንድሙ ተከፍሏል"></div>
+    <p class="meta" id="payEthDate">የኢትዮጵያ ቀን፡ ${formatEth(todayISO())}</p>
+    <button class="btn full" style="margin-top:6px;" onclick="savePaymentEntry()">ክፍያ አስቀምጥ</button>
+  </div>`;
+
+  el.innerHTML = html;
+  refreshPaymentShareInfo();
+}
+
+function onPaymentMemberChange(){
+  ui.payment.memberId = document.getElementById("payMemberSelect").value;
+  ui.payment.shareId = null;
+  renderPayments();
+}
+function onPaymentShareChange(){
+  ui.payment.shareId = document.getElementById("payShareSelect").value;
+  refreshPaymentShareInfo();
+}
+function onPaymentCategoryChange(){
+  const cat = document.getElementById("payCategory").value;
+  document.getElementById("payWeeksField").style.display = cat==="weekly" ? "block" : "none";
+  if(cat==="weekly") onWeeksCountChange();
+}
+function onWeeksCountChange(){
+  const s = state.shares.find(x=>x.id===ui.payment.shareId);
+  if(!s) return;
+  const weekly = shareWeekly(s);
+  let n = parseInt(document.getElementById("payWeeksCount").value) || 1;
+  if(n<1) n = 1;
+  document.getElementById("payAmount").value = n*weekly;
+}
+function updateEthDateNote(){
+  const d = document.getElementById("payDate").value || todayISO();
+  document.getElementById("payEthDate").textContent = "የኢትዮጵያ ቀን፡ " + formatEth(d);
+}
+
+function refreshPaymentShareInfo(){
+  const s = state.shares.find(x=>x.id===ui.payment.shareId);
+  const infoEl = document.getElementById("payShareInfo");
+  if(!s || !infoEl) return;
+  const weekly = shareWeekly(s);
+  const weeksPaid = shareWeeksPaidCount(s);
+  const unpaidWeeks = shareUnpaidWeeks(s);
+  const remaining = shareRemaining(s);
+  infoEl.innerHTML = `<div class="info-box">
+    <div class="meta">ሳምንታዊ ክፍያ መጠን፡ <b style="color:#fff;">${formatMoney(weekly)}</b></div>
+    <div class="meta">የተከፈለ ሳምንት፡ ${weeksPaid} / ${state.settings.totalWeeks}</div>
+    <div class="meta">ያልተከፈለ ሳምንት ብዛት፡ <b style="color:#FFD9BE;">${unpaidWeeks}</b></div>
+    <div class="meta">ጠቅላላ ያልተከፈለ መጠን፡ <b style="color:#FFD9BE;">${formatMoney(remaining)}</b></div>
+  </div>`;
+  const weeksInput = document.getElementById("payWeeksCount");
+  if(weeksInput){
+    weeksInput.max = unpaidWeeks || 1;
+    weeksInput.value = Math.min(1, unpaidWeeks) || 1;
+    document.getElementById("payWeeksNote").textContent = unpaidWeeks>0 ? (unpaidWeeks + " ሳምንት ገና አልተከፈለም") : "ሁሉም ሳምንታት ተከፍለዋል";
+  }
+  onWeeksCountChange();
+}
+
+function savePaymentEntry(){
+  const s = state.shares.find(x=>x.id===ui.payment.shareId);
+  if(!s){ showToast("የእጣ ድርሻ ይምረጡ"); return; }
+  const category = document.getElementById("payCategory").value;
+  const amount = parseFloat(document.getElementById("payAmount").value);
   if(!amount || amount<=0){ showToast("ትክክለኛ መጠን አስገባ"); return; }
+
   const payment = {
     id: uid(),
-    shareId,
-    payerName: document.getElementById("payPayer_"+shareId).value.trim(),
+    shareId: s.id,
+    payerName: document.getElementById("payPayer").value.trim(),
     amount,
-    weekNumber: parseInt(document.getElementById("payWeek_"+shareId).value) || 1,
-    category: document.getElementById("payCategory_"+shareId).value,
-    method: document.getElementById("payMethod_"+shareId).value,
-    reference: document.getElementById("payRef_"+shareId).value.trim(),
-    dateGregorian: document.getElementById("payDate_"+shareId).value || todayISO()
+    category,
+    method: document.getElementById("payMethod").value,
+    reference: document.getElementById("payRef").value.trim(),
+    dateGregorian: document.getElementById("payDate").value || todayISO()
   };
+
+  if(category==="weekly"){
+    const weeksCount = Math.max(1, parseInt(document.getElementById("payWeeksCount").value) || 1);
+    const startWeek = shareNextWeek(s);
+    payment.weekNumber = startWeek;
+    payment.weekEnd = Math.min(state.settings.totalWeeks, startWeek + weeksCount - 1);
+    payment.weeksCovered = weeksCount;
+  } else {
+    payment.weekNumber = 0;
+  }
+
   state.payments.push(payment);
-  ui.openPay[shareId] = false;
   saveState(); render();
   showToast("ክፍያ ተመዝግቧል");
 }
@@ -529,9 +718,10 @@ function renderWinForm(shareId){
 
   return `<div class="card" id="winFormCard">
     <h2>አሸናፊ፡ ${escapeHtml(member?member.name:"?")} (#${escapeHtml(s.lotteryNumber)})</h2>
+    <p class="note">ደንብ፡ አሸናፊው ቀደም ብሎ ሙሉ ክፍያ ቢጨርስም ባይጨርስም ሙሉ የ${formatMoney(full)} ብር ክፍያ ይሰላል፤ ካልተጠናቀቀ ግን ያልተከፈለው ውዝፍ ገንዘብ ተቀንሶ ይከፈላል።</p>
     <div class="field"><label class="f">ሙሉ የእጣ ክፍያ</label><input type="number" id="winFull_${s.id}" value="${full}"></div>
     <div class="form-grid">
-      <div class="field"><label class="f">የሚቀነስ ያልተከፈለ እዳ</label><input type="number" id="winArrears_${s.id}" value="${arrears}"></div>
+      <div class="field"><label class="f">የሚቀነስ ያልተከፈለ እዳ (ውዝፍ)</label><input type="number" id="winArrears_${s.id}" value="${arrears}"></div>
       <div class="field"><label class="f">የሚቀነስ የብድር ቀሪ ሂሳብ</label><input type="number" id="winLoan_${s.id}" value="${loanOut}"></div>
     </div>
     <div class="field"><label class="f">የጠበቃ ክፍያ</label><input type="number" id="winLawyer_${s.id}" value="${state.settings.lawyerFee}"></div>
@@ -572,7 +762,7 @@ function updateReceipt(shareId){
   const net = full - arrears - loan - commission - lawyer;
   document.getElementById("winReceipt_"+shareId).innerHTML =
     `<div class="line"><span>ሙሉ ክፍያ</span><span>${formatMoney(full)}</span></div>
-     <div class="line"><span>እዳ</span><span>-${formatMoney(arrears)}</span></div>
+     <div class="line"><span>ውዝፍ እዳ ቅናሽ</span><span>-${formatMoney(arrears)}</span></div>
      <div class="line"><span>የብድር ቅናሽ</span><span>-${formatMoney(loan)}</span></div>
      ${sold?`<div class="line"><span>ኮሚሽን ${commissionRate}%</span><span>-${formatMoney(commission)}</span></div>`:""}
      <div class="line"><span>የጠበቃ ክፍያ</span><span>-${formatMoney(lawyer)}</span></div>
@@ -708,11 +898,12 @@ function renderSettings(){
   el.innerHTML = `<div class="card">
     <h2>የኢቁብ ቅንብሮች</h2>
     <div class="field"><label class="f">መሰረታዊ ሳምንታዊ መጠን (1 ሙሉ ድርሻ)</label><input type="number" id="setWeekly" value="${s.baseWeekly}"></div>
-    <div class="field"><label class="f">መሰረታዊ ሙሉ ክፍያ (1 ሙሉ ድርሻ)</label><input type="number" id="setPayout" value="${s.basePayout}"></div>
+    <div class="field"><label class="f">መሰረታዊ ሙሉ ክፍያ (1 ሙሉ ድርሻ ካሸነፈ)</label><input type="number" id="setPayout" value="${s.basePayout}"></div>
     <div class="field"><label class="f">በዙር ውስጥ ጠቅላላ ሳምንታት</label><input type="number" id="setWeeks" value="${s.totalWeeks}"></div>
     <div class="field"><label class="f">በተሸጡ እድሎች ላይ የኮሚሽን መጠን (%)</label><input type="number" id="setCommission" value="${s.commissionRate}"></div>
     <div class="field"><label class="f">በክፍያ የጠበቃ ክፍያ</label><input type="number" id="setLawyer" value="${s.lawyerFee}"></div>
     <button class="btn full" onclick="saveSettings()">ቅንብሮች አስቀምጥ</button>
+    <p class="note">ማሳሰቢያ፡ ይህ ገጽ (link) ሲከፍቱ የገባው መረጃ ከዚህ Claude መለያዎ ጋር ተያይዞ ይቀመጣል፤ በተመሳሳይ መለያ በማንኛውም መሳሪያ ሲከፍቱት ተመሳሳይ መረጃ ያገኛሉ።</p>
   </div>`;
 }
 
@@ -765,6 +956,7 @@ function render(){
   renderHeader();
   renderDashboard();
   renderMembers();
+  renderPayments();
   renderDraw();
   renderLoans();
   renderSettings();
