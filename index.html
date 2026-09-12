@@ -74,6 +74,7 @@
     <h1>የእቁብ አስተዳዳሪ</h1>
     <p class="sub" id="headerSub">በመጫን ላይ...</p>
   </header>
+  <div id="storageBanner" style="display:none;background:#5c1c1c;border:1px solid #B5652E;color:#fff;padding:10px 14px;border-radius:8px;font-size:0.85rem;font-weight:700;margin-bottom:14px;line-height:1.5;"></div>
   <nav>
     <button class="tab-btn active" data-tab="dashboard">ዳሽቦርድ</button>
     <button class="tab-btn" data-tab="members">አባላት</button>
@@ -103,12 +104,13 @@ window.addEventListener("error", function(e){
 let state = null;
 const STORAGE_KEY = "ekub_system_v1";
 let ui = { openMembers:{}, openWin:{}, payment:{ memberId:null, shareId:null } };
+let storageAvailable = true;
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
 function defaultState(){
   return {
-    settings: { baseWeekly:94000, basePayout:10304000, totalWeeks:110, commissionRate:13, lawyerFee:4000 },
+    settings: { baseWeekly:94000, basePayout:10304000, totalWeeks:110, commissionRate:13, lawyerFee:4000, bonoPerUnit:2000, collectorCommissionWeeks:2 },
     members: [],
     shares: [],
     payments: [],
@@ -118,16 +120,30 @@ function defaultState(){
 }
 
 async function loadState(){
+  if(typeof window.storage === "undefined"){
+    storageAvailable = false;
+    state = defaultState();
+    render();
+    return;
+  }
   try{
     const res = await window.storage.get(STORAGE_KEY);
     state = res ? JSON.parse(res.value) : defaultState();
   }catch(e){
+    // a missing key can throw on first run - that's normal, storage itself is still fine
     state = defaultState();
   }
+  if(!state.settings) state.settings = defaultState().settings;
+  if(state.settings.bonoPerUnit === undefined) state.settings.bonoPerUnit = 2000;
+  if(state.settings.collectorCommissionWeeks === undefined) state.settings.collectorCommissionWeeks = 2;
   render();
 }
 
 async function saveState(){
+  if(!storageAvailable){
+    render();
+    return;
+  }
   try{
     const res = await window.storage.set(STORAGE_KEY, JSON.stringify(state));
     if(!res){ showToast("ማስቀመጥ አልተቻለም - እንደገና ይሞክሩ"); }
@@ -209,6 +225,33 @@ function shareNextWeek(s){
 function shareUnpaidWeeks(s){
   return Math.max(0, state.settings.totalWeeks - shareWeeksPaidCount(s));
 }
+// a share can still receive payments if it hasn't been sold away and still owes weeks -
+// this includes shares that already won the draw, since the winner keeps paying weekly afterward
+function shareIsPayable(s){
+  return s.status !== "sold" && shareUnpaidWeeks(s) > 0;
+}
+// BONO: a fixed slice of every weekly payment set aside as BONO, proportional to share size
+// (2000 birr per full unit per week, scaled down for 1/2, 1/4 shares etc.)
+function shareBonoPerWeek(s){ return s.units * (state.settings.bonoPerUnit || 0); }
+function totalBonoCollected(){
+  let total = 0;
+  state.payments.forEach(p=>{
+    if(p.category==="weekly"){
+      const s = state.shares.find(x=>x.id===p.shareId);
+      if(s){
+        const weeks = p.weeksCovered || 1;
+        total += weeks * shareBonoPerWeek(s);
+      }
+    }
+  });
+  return total;
+}
+// Collector's commission: a one-time cut per share, equal to N weeks of that share's weekly rate
+// (default 2 weeks) - this is the benefit the collectors/bosses take out of the pool per share.
+function shareCollectorCommission(s){ return (state.settings.collectorCommissionWeeks || 0) * shareWeekly(s); }
+function totalCollectorCommission(){
+  return state.shares.reduce((a,s)=>a+shareCollectorCommission(s),0);
+}
 function memberShares(memberId){ return state.shares.filter(s=>s.memberId===memberId); }
 function memberTotals(memberId){
   const shares = memberShares(memberId);
@@ -231,6 +274,13 @@ function memberLoanOutstanding(memberId){
 function renderHeader(){
   document.getElementById("headerSub").textContent =
     state.members.length + " አባላት፣ " + state.shares.length + " የእጣ ድርሻዎች";
+  const banner = document.getElementById("storageBanner");
+  if(!storageAvailable){
+    banner.style.display = "block";
+    banner.textContent = "ማስጠንቀቂያ፡ ይህ ገጽ ራሱን ችሎ (ከClaude ውይይት ውጭ) ስለተከፈተ በራስ-ሰር አያስቀምጥም - ገጹ ሲታደስ ወይም ሲዘጋ የገባው መረጃ ይጠፋል። እባክዎ ይህንኑ ገጽ ከClaude ውይይትዎ ውስጥ ተጠቅመው ይክፈቱት፤ አለበለዚያ ስራ ከመጨረስዎ በፊት ሁልጊዜ ከታች ባለው 'JSON አውርድ' ይጠቀሙ።";
+  } else {
+    banner.style.display = "none";
+  }
 }
 
 // ============ DASHBOARD ============
@@ -244,6 +294,7 @@ function renderDashboard(){
   const weekCollected = state.payments.filter(p=>p.dateGregorian>=weekAgo).reduce((a,p)=>a+p.amount,0);
   const monthCollected = state.payments.filter(p=>p.dateGregorian.slice(0,7)===monthPrefix).reduce((a,p)=>a+p.amount,0);
   const totalReceived = state.payments.reduce((a,p)=>a+p.amount,0);
+  const bonoTotal = totalBonoCollected();
 
   const activeShares = state.shares.filter(s=>s.status==="active");
   const totalOutstanding = activeShares.reduce((a,s)=>a+shareRemaining(s),0);
@@ -255,7 +306,8 @@ function renderDashboard(){
   const totalLoanRepaid = state.loans.reduce((a,l)=>a+(l.repayments||[]).reduce((x,r)=>x+r.amount,0),0);
   const totalLoanOutstanding = totalLoansGiven - totalLoanRepaid;
   const totalExpenses = state.expenses.reduce((a,e)=>a+e.amount,0);
-  const totalBalance = totalReceived + totalLoanRepaid - totalPaidOut - totalLoansGiven - totalExpenses;
+  const collectorCommissionTotal = totalCollectorCommission();
+  const totalBalance = totalReceived + totalLoanRepaid - totalPaidOut - totalLoansGiven - totalExpenses - collectorCommissionTotal;
 
   let html = `<div class="card">
     <p class="section-label">የገንዘብ ስብስብ</p>
@@ -264,6 +316,11 @@ function renderDashboard(){
       <div class="stat"><div class="n">${formatMoney(weekCollected)}</div><div class="l">ባለፉት 7 ቀናት</div></div>
       <div class="stat"><div class="n">${formatMoney(monthCollected)}</div><div class="l">በዚህ ወር</div></div>
       <div class="stat"><div class="n">${formatMoney(totalReceived)}</div><div class="l">ጠቅላላ (ከጅምሩ)</div></div>
+    </div>
+    <hr class="divider">
+    <div class="stat" style="background:var(--surface);border:1px dashed var(--khaki-light);">
+      <div class="n good">${formatMoney(bonoTotal)}</div>
+      <div class="l">ከጠቅላላ ስብስብ ውስጥ የቦኖ ድርሻ (ከላይኛው ${formatMoney(totalReceived)} ውስጥ የተካተተ)</div>
     </div>
   </div>
 
@@ -286,9 +343,13 @@ function renderDashboard(){
       <div class="stat"><div class="n ${totalLoanOutstanding>0?'bad':''}">${formatMoney(totalLoanOutstanding)}</div><div class="l">ያልተመለሰ ብድር ቀሪ</div></div>
     </div>
     <hr class="divider">
+    <div class="stat" style="background:var(--surface);border:1px dashed var(--khaki-light);margin-bottom:8px;">
+      <div class="n good">${formatMoney(collectorCommissionTotal)}</div>
+      <div class="l">ጠቅላላ የሰብሳቢዎች ኮሚሽን (በድርሻ ${state.settings.collectorCommissionWeeks} ሳምንት ተመን)</div>
+    </div>
     <div class="stat" style="background:var(--surface);border:2px solid var(--khaki-light);">
       <div class="n" style="font-size:1.4rem;">${formatMoney(totalBalance)}</div>
-      <div class="l">በእጅ ያለ ጠቅላላ ሂሳብ (ገንዘብ ያዥ ጋር)</div>
+      <div class="l">በእጅ ያለ ጠቅላላ ሂሳብ (ገንዘብ ያዥ ጋር፣ የሰብሳቢ ኮሚሽን ተቀንሶ)</div>
     </div>
   </div>`;
 
@@ -410,6 +471,7 @@ function renderMembers(){
 // Read-only share summary + history; payment recording now lives in the Payments tab
 function renderShareItem(s, member){
   const weekly = shareWeekly(s);
+  const bonoWeekly = shareBonoPerWeek(s);
   const due = shareTotalDue(s);
   const paid = sharePaidWeekly(s);
   const remaining = shareRemaining(s);
@@ -420,17 +482,17 @@ function renderShareItem(s, member){
   let badge = "";
   if(s.status==="won") badge = `<span class="badge won">አሸናፊ</span>`;
   if(s.status==="sold") badge = `<span class="badge sold">ተሽጧል</span>`;
-  if(s.status==="active" && remaining>0) badge += ` <span class="badge overdue">${unpaidWeeks} ሳምንት ውዝፍ</span>`;
+  if(s.status!=="sold" && remaining>0) badge += ` <span class="badge overdue">${unpaidWeeks} ሳምንት ውዝፍ</span>`;
 
   let html = `<div class="share-item">
     <div class="share-head">
       <div><span class="name">#${escapeHtml(s.lotteryNumber||"-")}</span> <span class="meta">(${s.units} ድርሻ)</span></div>
       <div>${badge}</div>
     </div>
-    <div class="meta">ሳምንታዊ ክፍያ፡ ${formatMoney(weekly)} &middot; ሙሉ ክፍያ (ካሸነፈ)፡ ${formatMoney(shareFullPayout(s))}</div>
+    <div class="meta">ሳምንታዊ ክፍያ፡ ${formatMoney(weekly)} (ከዚህ ውስጥ ${formatMoney(bonoWeekly)} ቦኖ) &middot; ሙሉ ክፍያ (ካሸነፈ)፡ ${formatMoney(shareFullPayout(s))}</div>
     <div class="meta">${formatMoney(paid)} ከ ${formatMoney(due)} ተከፍሏል &middot; ${weeksPaid} ከ ${state.settings.totalWeeks} ሳምንት ተሸፍኗል &middot; ቀሪ፡ ${formatMoney(remaining)}</div>`;
 
-  if(s.status==="active"){
+  if(shareIsPayable(s)){
     html += `<button class="btn ghost" style="margin-top:8px;" onclick="goToPayment('${member.id}','${s.id}')">ክፍያ ይመዝገቡ</button>`;
   }
 
@@ -497,7 +559,7 @@ function renderPayments(){
   if(!ui.payment.memberId || !state.members.find(m=>m.id===ui.payment.memberId)){
     ui.payment.memberId = state.members[0].id;
   }
-  let shares = memberShares(ui.payment.memberId).filter(s=>s.status==="active");
+  let shares = memberShares(ui.payment.memberId).filter(s=>shareIsPayable(s));
   if(!ui.payment.shareId || !shares.find(s=>s.id===ui.payment.shareId)){
     ui.payment.shareId = shares.length ? shares[0].id : null;
   }
@@ -515,7 +577,7 @@ function renderPayments(){
     </div>`;
 
   if(shares.length===0){
-    html += `<p class="empty">ይህ አባል ንቁ ድርሻ የለውም</p></div>`;
+    html += `<p class="empty">ይህ አባል ክፍያ የሚያስፈልገው ድርሻ የለውም</p></div>`;
     el.innerHTML = html;
     return;
   }
@@ -593,11 +655,12 @@ function refreshPaymentShareInfo(){
   const infoEl = document.getElementById("payShareInfo");
   if(!s || !infoEl) return;
   const weekly = shareWeekly(s);
+  const bonoWeekly = shareBonoPerWeek(s);
   const weeksPaid = shareWeeksPaidCount(s);
   const unpaidWeeks = shareUnpaidWeeks(s);
   const remaining = shareRemaining(s);
   infoEl.innerHTML = `<div class="info-box">
-    <div class="meta">ሳምንታዊ ክፍያ መጠን፡ <b style="color:#fff;">${formatMoney(weekly)}</b></div>
+    <div class="meta">ሳምንታዊ ክፍያ መጠን፡ <b style="color:#fff;">${formatMoney(weekly)}</b> (ከዚህ ውስጥ ${formatMoney(bonoWeekly)} ቦኖ)</div>
     <div class="meta">የተከፈለ ሳምንት፡ ${weeksPaid} / ${state.settings.totalWeeks}</div>
     <div class="meta">ያልተከፈለ ሳምንት ብዛት፡ <b style="color:#FFD9BE;">${unpaidWeeks}</b></div>
     <div class="meta">ጠቅላላ ያልተከፈለ መጠን፡ <b style="color:#FFD9BE;">${formatMoney(remaining)}</b></div>
@@ -712,18 +775,16 @@ function renderWinForm(shareId){
   if(!s) return "";
   const member = state.members.find(m=>m.id===s.memberId);
   const full = shareFullPayout(s);
-  const arrears = shareRemaining(s);
   const loanOut = memberLoanOutstanding(s.memberId);
+  const unpaidWeeks = shareUnpaidWeeks(s);
+  const remaining = shareRemaining(s);
   const today = todayISO();
 
   return `<div class="card" id="winFormCard">
     <h2>አሸናፊ፡ ${escapeHtml(member?member.name:"?")} (#${escapeHtml(s.lotteryNumber)})</h2>
-    <p class="note">ደንብ፡ አሸናፊው ቀደም ብሎ ሙሉ ክፍያ ቢጨርስም ባይጨርስም ሙሉ የ${formatMoney(full)} ብር ክፍያ ይሰላል፤ ካልተጠናቀቀ ግን ያልተከፈለው ውዝፍ ገንዘብ ተቀንሶ ይከፈላል።</p>
+    <p class="note">ደንብ፡ አሸናፊው ቀደም ብሎ ሙሉ ክፍያ ቢጨርስም ባይጨርስም ሙሉ የ${formatMoney(full)} ብር ወዲያውኑ ይከፈለዋል። ${unpaidWeeks>0 ? "ያልተከፈለ "+unpaidWeeks+" ሳምንት ስላለው ግን ከዚህ ክፍያ አይቀነስም - በሚቀጥሉት ሳምንታት ሳምንታዊ ክፍያውን ${formatMoney(shareWeekly(s))} አድርጎ መክፈሉን ይቀጥላል።" : "ሁሉንም ክፍያ አጠናቅቋል።"} እድሉ ከተሸጠ ግን የ${state.settings.commissionRate}% ኮሚሽን የሚሰላው ገና ካልተከፈለው ቀሪ መጠን (${formatMoney(remaining)}) ላይ እንጂ ከተከፈለው ወይም ከሙሉ ክፍያው ላይ አይደለም።</p>
     <div class="field"><label class="f">ሙሉ የእጣ ክፍያ</label><input type="number" id="winFull_${s.id}" value="${full}"></div>
-    <div class="form-grid">
-      <div class="field"><label class="f">የሚቀነስ ያልተከፈለ እዳ (ውዝፍ)</label><input type="number" id="winArrears_${s.id}" value="${arrears}"></div>
-      <div class="field"><label class="f">የሚቀነስ የብድር ቀሪ ሂሳብ</label><input type="number" id="winLoan_${s.id}" value="${loanOut}"></div>
-    </div>
+    <div class="field"><label class="f">የሚቀነስ የብድር ቀሪ ሂሳብ</label><input type="number" id="winLoan_${s.id}" value="${loanOut}"></div>
     <div class="field"><label class="f">የጠበቃ ክፍያ</label><input type="number" id="winLawyer_${s.id}" value="${state.settings.lawyerFee}"></div>
     <div class="field">
       <label class="f"><input type="checkbox" id="winSold_${s.id}" onchange="toggleSoldFields('${s.id}')" style="width:auto;margin-right:6px;">እድሉ ለገዢ ተሽጧል</label>
@@ -733,6 +794,7 @@ function renderWinForm(shareId){
         <div class="field"><label class="f">የገዢ ስም</label><input type="text" id="winBuyer_${s.id}"></div>
         <div class="field"><label class="f">የገዢ ስልክ</label><input type="text" id="winBuyerPhone_${s.id}"></div>
       </div>
+      <div class="field"><label class="f">ገና ያልተከፈለ ቀሪ መጠን (የኮሚሽን መሰረት)</label><input type="number" id="winRemaining_${s.id}" value="${remaining}"></div>
       <div class="field"><label class="f">የኮሚሽን መጠን %</label><input type="number" id="winCommission_${s.id}" value="${state.settings.commissionRate}"></div>
     </div>
     <div class="field"><label class="f">የክፍያ ቀን</label><input type="date" id="winDate_${s.id}" value="${today}"></div>
@@ -753,18 +815,18 @@ function toggleSoldFields(shareId){
 
 function updateReceipt(shareId){
   const full = parseFloat(document.getElementById("winFull_"+shareId).value)||0;
-  const arrears = parseFloat(document.getElementById("winArrears_"+shareId).value)||0;
   const loan = parseFloat(document.getElementById("winLoan_"+shareId).value)||0;
   const lawyer = parseFloat(document.getElementById("winLawyer_"+shareId).value)||0;
   const sold = document.getElementById("winSold_"+shareId).checked;
+  const remainingInput = document.getElementById("winRemaining_"+shareId);
+  const remaining = sold ? (parseFloat(remainingInput ? remainingInput.value : 0)||0) : 0;
   const commissionRate = sold ? (parseFloat(document.getElementById("winCommission_"+shareId).value)||0) : 0;
-  const commission = sold ? full * commissionRate/100 : 0;
-  const net = full - arrears - loan - commission - lawyer;
+  const commission = sold ? remaining * commissionRate/100 : 0;
+  const net = full - loan - commission - lawyer;
   document.getElementById("winReceipt_"+shareId).innerHTML =
     `<div class="line"><span>ሙሉ ክፍያ</span><span>${formatMoney(full)}</span></div>
-     <div class="line"><span>ውዝፍ እዳ ቅናሽ</span><span>-${formatMoney(arrears)}</span></div>
      <div class="line"><span>የብድር ቅናሽ</span><span>-${formatMoney(loan)}</span></div>
-     ${sold?`<div class="line"><span>ኮሚሽን ${commissionRate}%</span><span>-${formatMoney(commission)}</span></div>`:""}
+     ${sold?`<div class="line"><span>ኮሚሽን ${commissionRate}% (ከቀሪ ${formatMoney(remaining)})</span><span>-${formatMoney(commission)}</span></div>`:""}
      <div class="line"><span>የጠበቃ ክፍያ</span><span>-${formatMoney(lawyer)}</span></div>
      <div class="line total"><span>የተጣራ የሚደረስ ገንዘብ</span><span>${formatMoney(net)}</span></div>`;
 }
@@ -775,19 +837,20 @@ function confirmWinner(shareId){
   const s = state.shares.find(x=>x.id===shareId);
   if(!s) return;
   const full = parseFloat(document.getElementById("winFull_"+shareId).value)||0;
-  const arrears = parseFloat(document.getElementById("winArrears_"+shareId).value)||0;
   const loan = parseFloat(document.getElementById("winLoan_"+shareId).value)||0;
   const lawyer = parseFloat(document.getElementById("winLawyer_"+shareId).value)||0;
   const sold = document.getElementById("winSold_"+shareId).checked;
+  const remainingInput = document.getElementById("winRemaining_"+shareId);
+  const remaining = sold ? (parseFloat(remainingInput ? remainingInput.value : 0)||0) : 0;
   const commissionRate = sold ? (parseFloat(document.getElementById("winCommission_"+shareId).value)||0) : 0;
-  const commission = sold ? full * commissionRate/100 : 0;
-  const net = full - arrears - loan - commission - lawyer;
+  const commission = sold ? remaining * commissionRate/100 : 0;
+  const net = full - loan - commission - lawyer;
   const date = document.getElementById("winDate_"+shareId).value || todayISO();
 
   s.status = sold ? "sold" : "won";
   s.wonDate = date;
   s.payout = {
-    fullPayout: full, arrears, loanDeduction: loan, commission, lawyerFee: lawyer,
+    fullPayout: full, loanDeduction: loan, commission, commissionBase: remaining, lawyerFee: lawyer,
     net, disbursed: true, dateGregorian: date,
     buyerName: sold ? document.getElementById("winBuyer_"+shareId).value.trim() : "",
     buyerPhone: sold ? document.getElementById("winBuyerPhone_"+shareId).value.trim() : ""
@@ -900,7 +963,9 @@ function renderSettings(){
     <div class="field"><label class="f">መሰረታዊ ሳምንታዊ መጠን (1 ሙሉ ድርሻ)</label><input type="number" id="setWeekly" value="${s.baseWeekly}"></div>
     <div class="field"><label class="f">መሰረታዊ ሙሉ ክፍያ (1 ሙሉ ድርሻ ካሸነፈ)</label><input type="number" id="setPayout" value="${s.basePayout}"></div>
     <div class="field"><label class="f">በዙር ውስጥ ጠቅላላ ሳምንታት</label><input type="number" id="setWeeks" value="${s.totalWeeks}"></div>
-    <div class="field"><label class="f">በተሸጡ እድሎች ላይ የኮሚሽን መጠን (%)</label><input type="number" id="setCommission" value="${s.commissionRate}"></div>
+    <div class="field"><label class="f">ከ1 ሙሉ ድርሻ ሳምንታዊ ክፍያ ውስጥ የቦኖ መጠን (ለ1/2 እና 1/4 በዚያው መጠን ይቀነሳል)</label><input type="number" id="setBono" value="${s.bonoPerUnit}"></div>
+    <div class="field"><label class="f">የሰብሳቢ ኮሚሽን (በስንት ሳምንት ሳምንታዊ ክፍያ ተመን)</label><input type="number" id="setCollectorWeeks" value="${s.collectorCommissionWeeks}"></div>
+    <div class="field"><label class="f">በተሸጡ እድሎች ላይ የኮሚሽን መጠን (%) - ከቀሪ ያልተከፈለ መጠን ላይ ይሰላል</label><input type="number" id="setCommission" value="${s.commissionRate}"></div>
     <div class="field"><label class="f">በክፍያ የጠበቃ ክፍያ</label><input type="number" id="setLawyer" value="${s.lawyerFee}"></div>
     <button class="btn full" onclick="saveSettings()">ቅንብሮች አስቀምጥ</button>
     <p class="note">ማሳሰቢያ፡ ይህ ገጽ (link) ሲከፍቱ የገባው መረጃ ከዚህ Claude መለያዎ ጋር ተያይዞ ይቀመጣል፤ በተመሳሳይ መለያ በማንኛውም መሳሪያ ሲከፍቱት ተመሳሳይ መረጃ ያገኛሉ።</p>
@@ -913,7 +978,9 @@ function saveSettings(){
     basePayout: parseFloat(document.getElementById("setPayout").value)||0,
     totalWeeks: parseInt(document.getElementById("setWeeks").value)||1,
     commissionRate: parseFloat(document.getElementById("setCommission").value)||0,
-    lawyerFee: parseFloat(document.getElementById("setLawyer").value)||0
+    lawyerFee: parseFloat(document.getElementById("setLawyer").value)||0,
+    bonoPerUnit: parseFloat(document.getElementById("setBono").value)||0,
+    collectorCommissionWeeks: parseFloat(document.getElementById("setCollectorWeeks").value)||0
   };
   saveState(); render();
   showToast("ቅንብሮች ተቀምጠዋል");
@@ -941,6 +1008,9 @@ function importData(evt){
       const data = JSON.parse(e.target.result);
       if(!data.members || !data.shares){ showToast("ይህ ትክክለኛ የኢቁብ ፋይል አይመስልም"); return; }
       state = data;
+      if(!state.settings) state.settings = defaultState().settings;
+      if(state.settings.bonoPerUnit === undefined) state.settings.bonoPerUnit = 2000;
+      if(state.settings.collectorCommissionWeeks === undefined) state.settings.collectorCommissionWeeks = 2;
       saveState(); render();
       showToast("መረጃ ገብቷል");
     }catch(err){
@@ -963,7 +1033,7 @@ function render(){
 
   Object.keys(ui.openWin).forEach(shareId=>{
     if(!ui.openWin[shareId]) return;
-    ["winFull_","winArrears_","winLoan_","winLawyer_","winCommission_"].forEach(prefix=>{
+    ["winFull_","winLoan_","winLawyer_","winCommission_","winRemaining_"].forEach(prefix=>{
       const elm = document.getElementById(prefix+shareId);
       if(elm) elm.addEventListener("input", ()=>updateReceipt(shareId));
     });
