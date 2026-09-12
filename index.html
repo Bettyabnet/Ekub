@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>የእቁብ አስተዳዳሪ</title>
+<title>የኢቁብ አስተዳዳሪ</title>
 <style>
   :root{
     --bg:#2E2013; --surface:#4A3623; --surface-raised:#6B5233; --line:#5C4630;
@@ -71,10 +71,9 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>የእቁብ አስተዳዳሪ</h1>
+    <h1>የኢቁብ አስተዳዳሪ</h1>
     <p class="sub" id="headerSub">በመጫን ላይ...</p>
   </header>
-  <div id="storageBanner" style="display:none;background:#5c1c1c;border:1px solid #B5652E;color:#fff;padding:10px 14px;border-radius:8px;font-size:0.85rem;font-weight:700;margin-bottom:14px;line-height:1.5;"></div>
   <nav>
     <button class="tab-btn active" data-tab="dashboard">ዳሽቦርድ</button>
     <button class="tab-btn" data-tab="members">አባላት</button>
@@ -103,8 +102,12 @@ window.addEventListener("error", function(e){
 
 let state = null;
 const STORAGE_KEY = "ekub_system_v1";
+const LOCAL_STORAGE_KEY = "ekub_system_v1_local_fallback";
 let ui = { openMembers:{}, openWin:{}, payment:{ memberId:null, shareId:null } };
-let storageAvailable = true;
+// storageMode: "cloud" = Claude's window.storage (syncs to your Claude account across devices)
+//              "local" = browser localStorage fallback (this browser/device only - e.g. GitHub Pages)
+//              "memory" = nothing persists at all (e.g. localStorage blocked/private browsing)
+let storageMode = "cloud";
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -120,18 +123,25 @@ function defaultState(){
 }
 
 async function loadState(){
-  if(typeof window.storage === "undefined"){
-    storageAvailable = false;
-    state = defaultState();
-    render();
-    return;
-  }
-  try{
-    const res = await window.storage.get(STORAGE_KEY);
-    state = res ? JSON.parse(res.value) : defaultState();
-  }catch(e){
-    // a missing key can throw on first run - that's normal, storage itself is still fine
-    state = defaultState();
+  if(typeof window.storage !== "undefined"){
+    storageMode = "cloud";
+    try{
+      const res = await window.storage.get(STORAGE_KEY);
+      state = res ? JSON.parse(res.value) : defaultState();
+    }catch(e){
+      // a missing key can throw on first run - that's normal, storage itself is still fine
+      state = defaultState();
+    }
+  } else {
+    // running outside Claude (e.g. GitHub Pages) - fall back to this browser's localStorage
+    try{
+      const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      state = raw ? JSON.parse(raw) : defaultState();
+      storageMode = "local";
+    }catch(e){
+      state = defaultState();
+      storageMode = "memory";
+    }
   }
   if(!state.settings) state.settings = defaultState().settings;
   if(state.settings.bonoPerUnit === undefined) state.settings.bonoPerUnit = 2000;
@@ -140,16 +150,23 @@ async function loadState(){
 }
 
 async function saveState(){
-  if(!storageAvailable){
-    render();
-    return;
+  if(storageMode === "cloud"){
+    try{
+      const res = await window.storage.set(STORAGE_KEY, JSON.stringify(state));
+      if(!res){ showToast("ማስቀመጥ አልተቻለም - እንደገና ይሞክሩ"); }
+    }catch(e){
+      showToast("ማስቀመጥ አልተቻለም - ግንኙነትዎን ያረጋግጡ");
+    }
+  } else if(storageMode === "local"){
+    try{
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
+    }catch(e){
+      showToast("በዚህ ብራውዘር ላይ ማስቀመጥ አልተቻለም - JSON አውርደው ያስቀምጡ");
+    }
+  } else {
+    showToast("ማስጠንቀቂያ፡ ምንም አይቀመጥም - JSON አውርደው ያስቀምጡ");
   }
-  try{
-    const res = await window.storage.set(STORAGE_KEY, JSON.stringify(state));
-    if(!res){ showToast("ማስቀመጥ አልተቻለም - እንደገና ይሞክሩ"); }
-  }catch(e){
-    showToast("ማስቀመጥ አልተቻለም - ግንኙነትዎን ያረጋግጡ");
-  }
+  render();
 }
 
 function showToast(msg){
@@ -274,13 +291,6 @@ function memberLoanOutstanding(memberId){
 function renderHeader(){
   document.getElementById("headerSub").textContent =
     state.members.length + " አባላት፣ " + state.shares.length + " የእጣ ድርሻዎች";
-  const banner = document.getElementById("storageBanner");
-  if(!storageAvailable){
-    banner.style.display = "block";
-    banner.textContent = "ማስጠንቀቂያ፡ ይህ ገጽ ራሱን ችሎ (ከClaude ውይይት ውጭ) ስለተከፈተ በራስ-ሰር አያስቀምጥም - ገጹ ሲታደስ ወይም ሲዘጋ የገባው መረጃ ይጠፋል። እባክዎ ይህንኑ ገጽ ከClaude ውይይትዎ ውስጥ ተጠቅመው ይክፈቱት፤ አለበለዚያ ስራ ከመጨረስዎ በፊት ሁልጊዜ ከታች ባለው 'JSON አውርድ' ይጠቀሙ።";
-  } else {
-    banner.style.display = "none";
-  }
 }
 
 // ============ DASHBOARD ============
@@ -778,11 +788,15 @@ function renderWinForm(shareId){
   const loanOut = memberLoanOutstanding(s.memberId);
   const unpaidWeeks = shareUnpaidWeeks(s);
   const remaining = shareRemaining(s);
+  const weekly = shareWeekly(s);
   const today = todayISO();
+  const unpaidNote = unpaidWeeks>0
+    ? ("ያልተከፈለ "+unpaidWeeks+" ሳምንት ስላለው ግን ከዚህ ክፍያ አይቀነስም - በሚቀጥሉት ሳምንታት ሳምንታዊ ክፍያውን "+formatMoney(weekly)+" አድርጎ መክፈሉን ይቀጥላል።")
+    : "ሁሉንም ክፍያ አጠናቅቋል።";
 
   return `<div class="card" id="winFormCard">
     <h2>አሸናፊ፡ ${escapeHtml(member?member.name:"?")} (#${escapeHtml(s.lotteryNumber)})</h2>
-    <p class="note">ደንብ፡ አሸናፊው ቀደም ብሎ ሙሉ ክፍያ ቢጨርስም ባይጨርስም ሙሉ የ${formatMoney(full)} ብር ወዲያውኑ ይከፈለዋል። ${unpaidWeeks>0 ? "ያልተከፈለ "+unpaidWeeks+" ሳምንት ስላለው ግን ከዚህ ክፍያ አይቀነስም - በሚቀጥሉት ሳምንታት ሳምንታዊ ክፍያውን ${formatMoney(shareWeekly(s))} አድርጎ መክፈሉን ይቀጥላል።" : "ሁሉንም ክፍያ አጠናቅቋል።"} እድሉ ከተሸጠ ግን የ${state.settings.commissionRate}% ኮሚሽን የሚሰላው ገና ካልተከፈለው ቀሪ መጠን (${formatMoney(remaining)}) ላይ እንጂ ከተከፈለው ወይም ከሙሉ ክፍያው ላይ አይደለም።</p>
+    <p class="note">ደንብ፡ አሸናፊው ቀደም ብሎ ሙሉ ክፍያ ቢጨርስም ባይጨርስም ሙሉ የ${formatMoney(full)} ብር ወዲያውኑ ይከፈለዋል። ${unpaidNote} እድሉ ከተሸጠ ግን የ${state.settings.commissionRate}% ኮሚሽን የሚሰላው ገና ካልተከፈለው ቀሪ መጠን (${formatMoney(remaining)}) ላይ እንጂ ከተከፈለው ወይም ከሙሉ ክፍያው ላይ አይደለም።</p>
     <div class="field"><label class="f">ሙሉ የእጣ ክፍያ</label><input type="number" id="winFull_${s.id}" value="${full}"></div>
     <div class="field"><label class="f">የሚቀነስ የብድር ቀሪ ሂሳብ</label><input type="number" id="winLoan_${s.id}" value="${loanOut}"></div>
     <div class="field"><label class="f">የጠበቃ ክፍያ</label><input type="number" id="winLawyer_${s.id}" value="${state.settings.lawyerFee}"></div>
